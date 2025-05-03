@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, UnauthorizedException } from '@nestjs/common';
 import { CreateUserDto } from './dto/create-user.dto';
 import { LoginUserDto } from './dto/login-user.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -18,19 +18,35 @@ export class UserService {
     async register(createUserDto: CreateUserDto) {
         const { email, password } = createUserDto;
 
-        // Hash the password
+        const existingUser = await this.prisma.user.findUnique({ where: { email } });
+        if (existingUser) {
+            throw new BadRequestException('User with this email already exists');
+        }
+
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        // Create the user in the database
-        const user = await this.prisma.user.create({
-            data: {
-                email,
-                password: hashedPassword,
-                role: createUserDto.role || 'user',
-            },
-        });
+        try {
+            const user = await this.prisma.user.create({
+                data: {
+                    email,
+                    password: hashedPassword,
+                    role: createUserDto.role || 'user',
+                },
+                select: {
+                    id: true,
+                    email: true,
+                    role: true,
+                },
+            });
 
-        return user;
+            return {
+                status: 'success',
+                message: 'User registered successfully',
+                data: user,
+            };
+        } catch (err) {
+            throw new InternalServerErrorException('Failed to register user');
+        }
     }
     // Login and generate JWT token
     async login(loginUserDto: LoginUserDto) {
@@ -51,17 +67,20 @@ export class UserService {
             throw new Error('Invalid credentials');
         }
 
-        if (!process.env.JWT_SECRET) {
-            throw new Error('JWT_SECRET is not defined');
-        }
+        try {
+            const payload = { sub: user.id, email: user.email, role: user.role };
+            const token = this.jwtService.sign(payload, {
+              secret: this.configService.get('JWT_SECRET'),
+              expiresIn: '1h', // adjust as needed
+            });
 
-
-        // Generate JWT token
-        const payload = { sub: user.id, username: user.email, role: user.role };
-        const token = this.jwtService.sign(payload, {
-            secret: this.configService.get('JWT_SECRET'), // <-- Better way
-            expiresIn: '60s',
-        });
-        return { access_token: token };
+            return {
+              status: 'success',
+              message: 'Login successful',
+              access_token: token,
+            };
+          } catch (err) {
+            throw new InternalServerErrorException('Failed to generate token');
+          }
     }
 }
